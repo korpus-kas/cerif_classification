@@ -1,30 +1,24 @@
-import pandas as pd
-from collections import Counter
-from nltk.tokenize import word_tokenize, sent_tokenize
-import classla
 import os
 import pickle
 import string
+import time
+from collections import Counter
+
+import classla
 import numpy as np
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.neural_network import MLPClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.svm import LinearSVC
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import GridSearchCV
-
+import pandas as pd
+from keras.layers import Dense
 from keras.models import Sequential, load_model
-from keras.layers import Dense, Dropout
-
+from nltk.tokenize import word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn.neighbors import KNeighborsClassifier
-
-import time
-
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.svm import LinearSVC
 from tqdm import tqdm
 
 tqdm.pandas()
@@ -69,8 +63,14 @@ def get_unique_subcerif(df):
 def preprocess_labels(cerif):
     mlb = MultiLabelBinarizer()
     labels = [set(c.split('|')) for c in cerif]
-    y = mlb.fit_transform(labels)
+    mlb.fit(labels)
     print(mlb.classes_)
+
+    # save model to disk
+    with open('output/cerif_final_models/labels-processor.obj', 'wb') as fp:
+        pickle.dump(mlb, fp)
+
+    y = mlb.transform(labels)
     return y
 
 
@@ -140,10 +140,12 @@ def preprocess_data(table, save_to_file, nlp_tool, precalculated_lemmas):
 
     if precalculated_lemmas:
         lemmas = build_lemmas('resources/Beseda_Corpus_Lemmatisation_Lexicon.txt')
-        df_subcerif['processed_body'] = df_subcerif['body'].progress_apply(process_body_corpus_beseda, stopwords=stopwords, punct=punct,
+        df_subcerif['processed_body'] = df_subcerif['body'].progress_apply(process_body_corpus_beseda,
+                                                                           stopwords=stopwords, punct=punct,
                                                                            lemmas=lemmas)
     else:
-        df_subcerif['processed_body'] = df_subcerif['body'].progress_apply(process_body_classla, stopwords=stopwords, punct=punct)
+        df_subcerif['processed_body'] = df_subcerif['body'].progress_apply(process_body_classla, stopwords=stopwords,
+                                                                           punct=punct)
 
     print('Text processed ...')
 
@@ -153,8 +155,16 @@ def preprocess_data(table, save_to_file, nlp_tool, precalculated_lemmas):
 
 def tfidf(df_subcerif):
     start_time = time.time()
+
+    # create a model
     tfidf = TfidfVectorizer()
     tfidf.fit(df_subcerif['processed_body'])
+
+    # save model to disk
+    with open('output/cerif_final_models/tfidf-processor.obj', 'wb') as fp:
+        pickle.dump(tfidf, fp)
+
+    # transform
     X = tfidf.transform(df_subcerif['processed_body'])
     print("--- %s seconds ---" % (time.time() - start_time))
     return X
@@ -177,17 +187,21 @@ def basic_classifiers(X_train, X_test, y_train, y_test):
         'SVM': LinearSVC(),
     }
 
-#     parameters = {
-#         'LR': {'estimator__solver': ["newton-cg", "lbfgs", "liblinear", "sag", "saga"]},
-#         'KN': {'estimator__n_neighbors': [5, 15, 50],
-#                'estimator__weights': ['uniform', 'distance']},
-#         'SVM': {'estimator__kernel' : ["linear", "poly", "rbf", "sigmoid", "precomputed"]}
-# }
+    #     parameters = {
+    #         'LR': {'estimator__solver': ["newton-cg", "lbfgs", "liblinear", "sag", "saga"]},
+    #         'KN': {'estimator__n_neighbors': [5, 15, 50],
+    #                'estimator__weights': ['uniform', 'distance']},
+    #         'SVM': {'estimator__kernel' : ["linear", "poly", "rbf", "sigmoid", "precomputed"]}
+    # }
 
     for name, clf in classifiers.items():
         # train
         print(name)
         clf = MultiOutputClassifier(clf, n_jobs=-1).fit(X_train, y_train)
+
+        # save model to disk
+        with open(f'output/cerif_final_models/{name}.obj', 'wb') as fp:
+            pickle.dump(clf, fp)
 
         # gs = GridSearchCV(MultiOutputClassifier(clf), param_grid=parameters[name], verbose=3, n_jobs=-1)
         # gs.fit(X_train, y_train)
@@ -237,8 +251,8 @@ def deep_mlp(X_train, X_test, y_train, y_test):
     model.save('output/cerif_models/baseline_subcerif_keras.h5')
     model = load_model('output/cerif_models/baseline_subcerif_keras.h5')
 
-    y_class = model.predict_classes(X_test)
-    y_prob = model.predict_proba(X_test)
+    # y_class = model.predict_classes(X_test)
+    # y_prob = model.predict_proba(X_test)
 
     # reports
     score = model.evaluate(X_test, y_test, batch_size=32)
@@ -289,7 +303,7 @@ def deep_mlp_batch(X_train, X_test, y_train, y_test):
         tf.keras.callbacks.EarlyStopping(patience=5),
         tf.keras.callbacks.ModelCheckpoint(
             filepath='output/cerif_models/baseline_subcerif_keras_generator.{epoch:02d}-{val_loss:.5f}.h5',
-        save_best_only=True),
+            save_best_only=True),
         tf.keras.callbacks.TensorBoard(log_dir='output/cerif_models/logs/'),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=0.0001)
     ]
@@ -299,7 +313,6 @@ def deep_mlp_batch(X_train, X_test, y_train, y_test):
     model.add(Dense(y_train.shape[1], kernel_initializer='uniform', activation='sigmoid'))
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['binary_accuracy'])
     model.summary()
-
 
     model.fit_generator(generator=batch_generator(X_train, y_train, 32, False),
                         epochs=100,
@@ -347,21 +360,22 @@ def main():
     # select task (subcerif or cerif)
     TASK = 'subcerif'
 
-    # classla.download('sl')  # download standard models for Slovenian, use hr for Croatian, sr for Serbian, bg for Bulgarian, mk for Macedonian
+    #### 0 import NLP tools ####
+    classla.download('sl')
     nlp = classla.Pipeline('sl', use_gpu=True, processors='tokenize,lemma')
-    #### 1 preprocess data (filter stopwords, create lemmas, ...) ####
+
+    #### 1 preprocess learning data (filter stopwords, create lemmas, ...) ####
     preprocess_data('data/kas-meta-texts.tbl',
                     save_to_file='output/cerif_preprocessed/classla/df_subcerif_classla.csv',
                     nlp_tool=nlp,
                     precalculated_lemmas=False)
 
-    # #### 2 load processed file ####
+    #### 2 load processed file ####
     csv = 'output/cerif_preprocessed/classla/df_subcerif_classla.csv'
     df = pd.read_csv(csv)
     print('Data imported ... ')
 
-    #### 3 TFIDF ####
-    # prepare or reload tfidf
+    #### 3 TFIDF: prepare or reload tfidf ####
     file = 'output/cerif_preprocessed/classla/X-default.pkl'
     X = tfidf(df)
     print('TF-IDF prepared ... ')
@@ -371,8 +385,7 @@ def main():
     X = load_tfidf(file=file)
     print('Preprocessed TF-IDF loaded ... ')
 
-    #### 4 Labels ####
-    # prepare or reload labels
+    #### 4 Labels: prepare or reload labels ####
     folder = 'output/cerif_preprocessed/classla'
     y = preprocess_labels(df[TASK].tolist())
     print('Labels prepared ... ')
@@ -382,7 +395,7 @@ def main():
     y = load_labels(TASK, folder=folder)
     print(f'{TASK} labels loaded ... ')
 
-    # # split into train/test
+    # split into train/test
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
 
     # train (no big difference between mlp and deep mlp)
